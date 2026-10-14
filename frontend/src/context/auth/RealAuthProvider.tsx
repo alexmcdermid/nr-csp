@@ -1,163 +1,92 @@
-import { fetchAuthSession, signInWithRedirect, signOut } from 'aws-amplify/auth';
-import { Hub } from 'aws-amplify/utils';
-import { type ReactNode, useEffect, useState } from 'react';
+import { type ReactNode, useCallback, useEffect, useState } from 'react';
 
+import { LoadingScreen } from '@/components/core/LoadingScreen';
 import { clearPersistedTableState } from '@/hooks/usePersistentState';
 import {
-  buildFederatedLogoutUrl,
-  clearStoredTokens,
-  IDIR_REALM_LOGOUT_GRACE_MS,
-  openIdirRealmLogoutPopup,
-} from '@/utils/logoutChain';
+  AUTH_CALLBACK_PATH,
+  completeOidcLogin,
+  endOidcSession,
+  getOidcReturnPath,
+  getUserManager,
+  isOidcConfigured,
+  restoreOidcUser,
+  startOidcLogin,
+} from '@/service/oidc-service';
 
 import { AuthContext } from './AuthContext';
-import { ROLES } from './permissions';
+import { famUserFromAccessToken } from './famUser';
 import { onSessionExpired } from './sessionExpiredSignal';
 import { setSignOutReason } from './signOutReason';
 
-import type { Role } from './permissions';
 import type { SignOutReason } from './signOutReason';
 import type { AuthContextValue, AuthUser } from './types';
-
-/**
- * Match a Cognito group name against a role constant.
- * Handles plain names ("VIEWER") and FAM-prefixed names ("CSP_VIEWER", "NRS_CSP_VIEWER").
- */
-function groupMatchesRole(group: string, role: string): boolean {
-  const upper = group.toUpperCase();
-  return upper === role || upper.endsWith(`_${role}`);
-}
-
-/**
- * Derive app-level privileges from raw Cognito group strings.
- * Returns a privilege for each known role constant whose group name appears in {@link groups}.
- */
-function extractPrivileges(groups: string[]): Role[] {
-  const privileges: Role[] = [];
-  for (const role of ROLES) {
-    if (groups.some((g) => groupMatchesRole(g, role))) {
-      privileges.push(role);
-    }
-  }
-  return privileges;
-}
+import type { User } from 'oidc-client-ts';
 
 export function RealAuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSigningOut, setIsSigningOut] = useState(false);
+  const [loginError, setLoginError] = useState<string>();
 
-  async function loadUser() {
-    try {
-      const session = await fetchAuthSession();
-      const payload = session.tokens?.idToken?.payload;
-      if (payload) {
-        const groups = (payload['cognito:groups'] as string[] | undefined) ?? [];
-        const displayName =
-          String(payload['name'] ?? '').trim() ||
-          [payload['given_name'], payload['family_name']].filter(Boolean).join(' ') ||
-          undefined;
-
-        // The backend reads this same claim as the principal (JwtService#extractUsername),
-        // so it's what lands in audit fields such as entryUserID.
-        const idpUsernameClaim = payload['custom:idp_username'];
-        const idirUsername = typeof idpUsernameClaim === 'string' ? idpUsernameClaim.trim() : '';
-
-        setUser({
-          username: String(payload['cognito:username'] ?? payload.sub ?? ''),
-          idirUsername: idirUsername || undefined,
-          displayName: displayName || undefined,
-          email: String(payload['email'] ?? ''),
-          roles: groups,
-          privileges: extractPrivileges(groups),
-        });
-      } else {
-        setUser(null);
-      }
-    } catch {
-      // A thrown error here doesn't reliably mean the session is dead — it's usually a
-      // transient fetchAuthSession() failure (network blip, momentary Cognito
-      // unavailability), and treating every failure as a logout bounced users on those
-      // blips. A genuinely dead session (refresh token expired/invalid) is instead caught
-      // by the 401 response interceptor in request.ts, an unambiguous signal from the
-      // backend itself — see sessionExpiredSignal. So leave `user` as it was.
-    } finally {
-      setIsLoading(false);
-    }
-  }
-
-  /**
-   * When the federated logout chain is configured, this drives a full-page
-   * navigation through SiteMinder → Keycloak → Cognito → app so every upstream
-   * session is terminated (not just Cognito). Local Amplify tokens are cleared
-   * first so the post-chain landing renders logged-out. A popup concurrently
-   * logs out loginproxy's `idir` broker realm — the one layer the chain can't
-   * reach; without it the next sign-in is a silent SSO login (see
-   * openIdirRealmLogoutPopup). If the chain config is incomplete, it falls
-   * back to a plain Amplify `signOut()` (Cognito-only).
-   */
-  async function performSignOut(reason: SignOutReason = 'user') {
+  const performSignOut = useCallback(async (reason: SignOutReason = 'user') => {
     setIsSigningOut(true);
-    // Recorded before anything is cleared: the chain below discards the SPA, so
-    // this is the only thing that tells the welcome screen why the user got
-    // there.
     setSignOutReason(reason);
     clearPersistedTableState();
-
-    const chainUrl = buildFederatedLogoutUrl(window.amplifyConfig);
-    if (chainUrl) {
-      clearStoredTokens(window.amplifyConfig?.userPoolClientId);
-      // Must be called synchronously within the click's user activation or
-      // popup blockers will eat it. ProtectedRoute renders a LoadingScreen
-      // while isSigningOut, covering the grace period.
-      const popup = openIdirRealmLogoutPopup(window.amplifyConfig);
-      if (popup) {
-        await new Promise((resolve) => setTimeout(resolve, IDIR_REALM_LOGOUT_GRACE_MS));
-        popup.close();
-      }
-      // Full-page navigation hands the browser to the chain; the SPA is
-      // discarded, so nothing after this runs.
-      window.location.assign(chainUrl);
-      return;
-    }
-
+    await endOidcSession();
     setUser(null);
-    await signOut();
-  }
+  }, []);
 
   useEffect(() => {
-    // `void` on both `loadUser()` calls: it returns a Promise that neither the effect
-    // nor the Hub listener can await (one is a cleanup-returning effect body, the other
-    // a sync callback), and there is nothing to handle anyway — `loadUser` swallows its
-    // own failures by design (see its catch) and always clears `isLoading`, so it never
-    // rejects. Marking them ignored says that, rather than leaving floating promises.
-    void loadUser();
-    let handledSessionExpired = false;
-    const unsubscribeHub = Hub.listen('auth', ({ payload }) => {
-      if (payload.event === 'signedIn' || payload.event === 'signedOut') void loadUser();
-    });
-    const unsubscribeSessionExpired = onSessionExpired(() => {
-      if (handledSessionExpired) return;
-      handledSessionExpired = true;
-      void performSignOut('timeout');
+    let active = true;
+    const load = async () => {
+      try {
+        const callback = window.location.pathname === AUTH_CALLBACK_PATH;
+        const session = callback ? await completeOidcLogin() : await restoreOidcUser();
+        if (!active) return;
+        setUser(session ? famUserFromAccessToken(session.access_token) : null);
+        if (callback && session) {
+          window.history.replaceState(window.history.state, '', getOidcReturnPath(session, '/search'));
+          window.dispatchEvent(new PopStateEvent('popstate'));
+        }
+      } catch {
+        if (active) {
+          setLoginError('Sign-in could not be completed. Please try again.');
+          window.history.replaceState(window.history.state, '', '/');
+          window.dispatchEvent(new PopStateEvent('popstate'));
+        }
+      } finally {
+        if (active) setIsLoading(false);
+      }
+    };
+    const refreshed = (session: User) => {
+      if (active) setUser(famUserFromAccessToken(session.access_token));
+    };
+    const manager = isOidcConfigured ? getUserManager() : undefined;
+    manager?.events.addUserLoaded(refreshed);
+    void load();
+    let expired = false;
+    const unsubscribe = onSessionExpired(() => {
+      if (!expired) {
+        expired = true;
+        void performSignOut('timeout');
+      }
     });
     return () => {
-      unsubscribeHub();
-      unsubscribeSessionExpired();
+      active = false;
+      manager?.events.removeUserLoaded(refreshed);
+      unsubscribe();
     };
-  }, []);
+  }, [performSignOut]);
 
   const value: AuthContextValue = {
     user,
     isAuthenticated: user !== null,
     isLoading,
     isSigningOut,
-    signIn: () => {
-      const idpName = window.amplifyConfig?.idpName ?? 'DEV-IDIR';
-      return signInWithRedirect({ provider: { custom: idpName } });
-    },
+    loginError,
+    signIn: (provider = 'idir') => startOidcLogin(provider),
     signOut: performSignOut,
   };
-
+  if (window.location.pathname === AUTH_CALLBACK_PATH && isLoading) return <LoadingScreen />;
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

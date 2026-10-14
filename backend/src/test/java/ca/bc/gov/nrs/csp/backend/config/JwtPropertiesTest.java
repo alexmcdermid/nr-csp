@@ -15,7 +15,7 @@ class JwtPropertiesTest {
 
         assertThat(properties.jwksUri()).isEqualTo("https://sso.example.com/.well-known/jwks.json");
         assertThat(properties.issuer()).isEqualTo("https://sso.example.com/auth/realms/standard");
-        assertThat(properties.audience()).isEqualTo("csp-audience");
+        assertThat(properties.clientId()).isEqualTo("csp-audience");
     }
 
     @Test

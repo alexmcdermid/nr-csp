@@ -1,20 +1,19 @@
-import { fetchAuthSession } from 'aws-amplify/auth';
 import { AxiosError } from 'axios';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 import * as sessionExpiredSignal from '@/context/auth/sessionExpiredSignal';
+import { getOidcUser } from '@/service/oidc-service';
 
 import { apiClient } from './request';
 
-vi.mock('aws-amplify/auth', () => ({
-  fetchAuthSession: vi.fn(),
-}));
+vi.mock('@/service/oidc-service', () => ({ getOidcUser: vi.fn(), isSessionEnded: () => false }));
+vi.mock('@/env', () => ({ env: { mockUser: false } }));
 
 vi.mock('@/context/auth/sessionExpiredSignal', () => ({
   emitSessionExpired: vi.fn(),
 }));
 
-const mockFetchAuthSession = vi.mocked(fetchAuthSession);
+const mockGetOidcUser = vi.mocked(getOidcUser);
 const mockEmitSessionExpired = vi.mocked(sessionExpiredSignal.emitSessionExpired);
 
 function axiosErrorWithStatus(status: number | undefined): AxiosError {
@@ -28,7 +27,7 @@ function axiosErrorWithStatus(status: number | undefined): AxiosError {
 describe('apiClient response interceptor', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockFetchAuthSession.mockResolvedValue({} as Awaited<ReturnType<typeof fetchAuthSession>>);
+    mockGetOidcUser.mockResolvedValue(null);
   });
 
   it('emits sessionExpired on a real 401 response', async () => {

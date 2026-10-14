@@ -1,11 +1,9 @@
 # Frontend deploy template — consumed by `oc process` in reusable-deploy.yml.
 #
-# Cognito / Vite config is baked into the image at build time (Docker ARGs),
-# so no VITE_* runtime parameters are needed here. Runtime wiring is limited to
-# BACKEND_URL (tells Caddy where to proxy /api/* traffic) and COGNITO_DOMAIN /
-# COGNITO_REGION (feed the CSP connect-src directive in Caddyfile).
+# Public CSS settings are mounted in /config.js at runtime; images are environment-neutral.
+# BACKEND_URL selects the API proxy; the issuer ConfigMap bounds CSS requests.
 #
-# The amplify-config ConfigMap this Deployment mounts is created by
+# The runtime-config ConfigMap this Deployment mounts is created by
 # common/openshift.init.yml (init step), where environment-scoped GitHub
 # variables resolve correctly — see the note there before moving it back.
 apiVersion: template.openshift.io/v1
@@ -36,12 +34,6 @@ parameters:
   - name: DOMAIN
     description: Cluster apps domain (no leading dot)
     value: apps.gold.devops.gov.bc.ca
-  - name: COGNITO_DOMAIN
-    description: Cognito hosted UI domain (no https://)
-    required: true
-  - name: COGNITO_REGION
-    description: AWS region for Cognito (feeds the regional cognito-idp connect-src entry)
-    value: ca-central-1
 
 objects:
   # ── Deployment ────────────────────────────────────────────
@@ -80,13 +72,12 @@ objects:
                 # Caddy reverse-proxies /api/* to the same-zone backend Service.
                 - name: BACKEND_URL
                   value: ${NAME}-backend-${ZONE}:8080
-                # Caddy's Content-Security-Policy connect-src needs the Cognito
-                # domain (OAuth token exchange) and region (silent token refresh
-                # via the regional cognito-idp API) to allow the SPA's fetch/XHR.
-                - name: COGNITO_DOMAIN
-                  value: ${COGNITO_DOMAIN}
-                - name: COGNITO_REGION
-                  value: ${COGNITO_REGION}
+                # Environment-specific issuer also bounds browser token/discovery requests.
+                - name: OIDC_ISSUER_URI
+                  valueFrom:
+                    configMapKeyRef:
+                      name: ${NAME}-${ZONE}-frontend
+                      key: OIDC_ISSUER_URI
                 # Caddy runtime log verbosity (see Caddyfile global options).
                 # Comes from the init-created ConfigMap so the value honors
                 # environment-scoped GitHub variables (see openshift.init.yml).
@@ -102,9 +93,9 @@ objects:
                   mountPath: /config
                 - name: tmp
                   mountPath: /tmp
-                - name: amplify-config
-                  mountPath: /usr/share/caddy/amplify-config.js
-                  subPath: amplify-config.js
+                - name: runtime-config
+                  mountPath: /usr/share/caddy/config.js
+                  subPath: config.js
                   readOnly: true
               resources:
                 requests:
@@ -140,9 +131,9 @@ objects:
               emptyDir: {}
             - name: tmp
               emptyDir: {}
-            - name: amplify-config
+            - name: runtime-config
               configMap:
-                name: ${NAME}-frontend-amplify-config-${ZONE}
+                name: ${NAME}-frontend-config-${ZONE}
 
   # ── Service ───────────────────────────────────────────────
   - apiVersion: v1

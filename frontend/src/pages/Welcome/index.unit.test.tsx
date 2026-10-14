@@ -92,17 +92,17 @@ describe('WelcomePage', () => {
 
     await user.click(screen.getByRole('button', { name: /log in with idir/i }));
 
-    expect(await screen.findByText(/could not start the idir login/i)).toBeInTheDocument();
+    expect(await screen.findByText(/could not start sign-in/i)).toBeInTheDocument();
   });
 
-  it('says Business BCeID is not wired up yet instead of starting a sign-in', async () => {
+  it('starts the selected Business BCeID provider', async () => {
     const user = userEvent.setup();
+    signIn.mockResolvedValueOnce(undefined);
     arrange();
 
     await user.click(screen.getByRole('button', { name: /log in with business bceid/i }));
 
-    expect(await screen.findByText(/business bceid login is not available yet/i)).toBeInTheDocument();
-    expect(signIn).not.toHaveBeenCalled();
+    expect(signIn).toHaveBeenCalledWith('business-bceid');
   });
 
   it('sends an already-authenticated visitor into the app', () => {

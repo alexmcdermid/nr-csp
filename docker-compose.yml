@@ -16,13 +16,12 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-      # All auth config (Cognito, mockUser, famClientId) is injected at runtime
-      # via amplify-config.js — edit frontend/public/amplify-config.js locally.
+      # All auth config (CSS issuer/client and mockUser) is injected at runtime
+      # via config.js — edit frontend/public/config.js locally.
     container_name: csp-frontend
     environment:
+      OIDC_ISSUER_URI: ${CSP_OIDC_ISSUER_URI:-https://not-configured.invalid/auth/realms/standard}
       BACKEND_URL: backend:8080
-      COGNITO_DOMAIN: ${COGNITO_DOMAIN}
-      COGNITO_REGION: ${COGNITO_REGION:-ca-central-1}
     ports:
       - "3000:3000"
     depends_on:

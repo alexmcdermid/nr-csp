@@ -14,8 +14,9 @@ import { type Page } from '@playwright/test';
 // way: frontend/src/context/auth/MockAuthProvider.tsx returns
 // `isAuthenticated: true` immediately, with the role read from
 // localStorage['csp.mockRole'] (default 'ADMIN'). See also frontend/src/env.ts —
-// mock auth requires BOTH `mockUser: true` in public/amplify-config.js (that
-// file is GITIGNORED: local-only) AND a localhost hostname.
+// mock auth requires BOTH `mockUser: true` in public/config.js AND a localhost
+// hostname. The file is tracked with public mock defaults; never put credentials
+// in it or commit machine-specific overrides.
 //
 // Consequences, and why there is no login dance below:
 //   * there is nothing to click — the app is authenticated on first paint;
@@ -29,7 +30,7 @@ const MOCK_ROLE_KEY = 'csp.mockRole';
 /**
  * Roles CSP's mock provider accepts. These are the EXACT members of `ROLES` in
  * frontend/src/context/auth/permissions.ts — `['ADMIN', 'APPROVE', 'VIEW']`. The provider maps `X`
- * to the Cognito group `CSP_X`.
+ * to the CSS group `CSP_X`.
  *
  * Getting this wrong is silent: `MockAuthProvider.getStoredRole()` falls back to 'ADMIN' for any
  * value not in that list, so a scenario asking for a role that does not exist runs with FULL ADMIN
@@ -65,25 +66,23 @@ export const MOCK_USER_ROLE: MockRole = 'ADMIN';
 export async function signInAsMockUser(page: Page, role: MockRole = MOCK_USER_ROLE): Promise<void> {
   // Enable mock auth for THIS BROWSER ONLY, by rewriting the runtime config as it is served.
   //
-  // src/env.ts gates mock auth on `window.amplifyConfig.mockUser === true`, which comes from
-  // public/amplify-config.js -- a file the dev server serves to EVERY frontend on this machine.
+  // src/env.ts gates mock auth on `window.appConfig.mockUser === true`, which comes from
+  // public/config.js -- a file the dev server serves to EVERY frontend on this machine.
   // Editing it on disk would be invisible, sticky, and shared: it silently switches the developer's
   // own stack to mock auth too, and if that stack's backend still has AUTH_MOCK_ENABLED=false it
   // then 401s every single API call while looking logged in. (Observed for real.)
   //
   // Intercepting the request instead keeps the opt-in inside the test browser: the file on disk is
-  // never touched, so a developer's manual Cognito login keeps working while the suite runs.
-  await page.route('**/amplify-config.js', async (route) => {
+  // never touched, so a developer's manual CSS login keeps working while the suite runs.
+  await page.route('**/config.js', async (route) => {
     const response = await route.fetch();
     const original = await response.text();
     await route.fulfill({
       status: 200,
       contentType: 'application/javascript',
-      // Injected as the FIRST key so it cannot be overwritten by a later one in the served file.
-      body: original.replace(
-        /window\.amplifyConfig\s*=\s*\{/,
-        'window.amplifyConfig = {\n  "mockUser": true,',
-      ),
+      body: /["']?mockUser["']?\s*:/.test(original)
+        ? original.replace(/(["']?mockUser["']?\s*:\s*)(?:true|false)/g, '$1true')
+        : original.replace(/window\.appConfig\s*=\s*\{/, 'window.appConfig = { mockUser: true,'),
     });
   });
 
@@ -113,11 +112,7 @@ export async function signInAsMockUser(page: Page, role: MockRole = MOCK_USER_RO
  * calling page object. This is the ONE home for the mock-auth nav dance — every page object across
  * every domain reuses it rather than re-inlining `history.pushState`/`PopStateEvent`.
  */
-export async function clientSideNavigate(
-  page: Page,
-  path: string,
-  state: Record<string, unknown> = {},
-): Promise<void> {
+export async function clientSideNavigate(page: Page, path: string, state: Record<string, unknown> = {}): Promise<void> {
   await page.evaluate(
     ({ p, usr }) => {
       const hasState = Object.keys(usr).length > 0;

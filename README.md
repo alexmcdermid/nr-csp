@@ -103,7 +103,7 @@ frontend/                 React 19 + Carbon SPA (Vite 8, TypeScript)
   e2e/                    BDD end-to-end suite — see frontend/e2e/README.md
   Caddyfile               Production static server + /api reverse proxy + CSP headers
 
-common/openshift.init.yml One-time OpenShift objects, incl. the amplify-config ConfigMap
+common/openshift.init.yml One-time OpenShift objects, incl. the runtime config ConfigMap
 monitoring/alerts/        Sysdig alert definitions synced after prod deploys
 docs/                     Business rules, refactor plans, investigations
 .github/workflows/        CI/CD — see CI/CD pipelines below
@@ -125,13 +125,11 @@ Open `.env` and fill in the values:
 | `SPRING_DATASOURCE_URL` | yes | Oracle JDBC URL — **TCPS descriptor form**, see note below |
 | `SPRING_DATASOURCE_USERNAME` | yes | Oracle username |
 | `SPRING_DATASOURCE_PASSWORD` | yes | Oracle password |
-| `JWT_JWKS_URI` | **always** | Cognito JWKS endpoint. Must be a **well-formed URL even in mock mode** — the backend parses it at startup and fails to boot on an empty value. With mock auth any placeholder works, e.g. `https://mock-auth.invalid/.well-known/jwks.json` |
-| `JWT_ISSUER` | real auth | JWT issuer claim |
-| `JWT_AUDIENCE` | real auth | JWT audience claim (the Cognito app client ID) |
+| `CSP_OIDC_ISSUER_URI` | real auth | CSS environment issuer |
+| `CSP_OIDC_CLIENT_ID` | real auth | Public CSS client ID |
 | `AUTH_MOCK_ENABLED` | for local dev | `true` enables backend mock auth — see [Authentication](#authentication) |
 | `AUTH_MOCK_ROLES` | no | Roles for the mock user: `ADMIN`, `APPROVE`, `VIEW` (comma-separated). Default `ADMIN` |
 | `JAVA_OPTS` | no | JVM flags for the backend container; defaults to container-aware heap sizing |
-| `COGNITO_DOMAIN` | no | Only feeds the Caddy `Content-Security-Policy` header when running the **production** image. Leave unset for the dev server — compose will warn that it is unset |
 
 > Use single quotes if a value contains special characters: `PASSWORD='p@ss!'`
 
@@ -150,42 +148,16 @@ Open `.env` and fill in the values:
 > - **Database.** `ValidatingDataSource` runs `SELECT 1 FROM DUAL` during startup and the app
 >   refuses to boot if the DB is unreachable. You need a working database either way — VPN and
 >   credentials, or the local seeded image.
-> - **JWKS URI.** `JwtService` parses `JWT_JWKS_URI` into a `URL` in `@PostConstruct`, so an
->   empty value throws at startup even with mock auth on. Any syntactically valid URL will do.
+> - **SSO.** Real authentication requires the CSS issuer/client; local mock authentication does not.
 >
 > The frontend container waits on the backend's health check, so a backend that fails to start
 > takes the frontend down with it — the symptom you see is the frontend never coming up.
 
-**2. Create your frontend auth config**
+**2. Choose frontend authentication**
 
-`frontend/public/amplify-config.js` is git-ignored and is **not** present in a fresh clone.
-The app will not boot without it — `getAmplifyConfig()` throws if `window.amplifyConfig` is
-unset. Two ways to get one:
-
-```bash
-# Quickest — a committed template, already pointed at localhost with mock auth on
-cp frontend/public/amplify-config.example.js frontend/public/amplify-config.js
-```
-
-Or **grab the live file from a deployed environment**, which is what the template was made
-from and the better route if the Cognito values have moved on:
-
-```bash
-# From a running environment
-curl -s https://nr-csp-test.apps.gold.devops.gov.bc.ca/amplify-config.js \
-  > frontend/public/amplify-config.js
-
-# Or straight from the ConfigMap, if you have cluster access
-oc extract configmap/nr-csp-frontend-amplify-config-test --to=frontend/public/ --confirm
-```
-
-Then make the two local edits:
-
-1. Point `redirectSignIn` / `redirectSignOut` at `http://localhost:3000/` and
-   `http://localhost:3000/logout`.
-2. Add `"mockUser": true` to skip Cognito — deployments omit it or set it false.
-
-See [Authentication](#authentication) for running against real Cognito instead.
+The tracked `frontend/public/config.js` enables local mock authentication. Deployed
+environments replace it with the public CSS runtime configuration. For real sign-in, use
+`frontend/public/config.example.js` and the setup in [Modern FAM authentication](docs/fam-keycloak-migration.md).
 
 **3. Connect to a database, then start**
 
@@ -279,67 +251,29 @@ snapshot, and how to tell which database you are actually connected to — are i
 
 ## Authentication
 
-For local development, use **mock mode** — no Cognito login required. Mock mode has two halves,
-and **both must be on** or you get a half-broken session:
+Browser authentication uses modern FAM / BC Gov CSS OpenID Connect with PKCE. API calls carry
+access tokens; the backend validates this environment's issuer and client, token type and
+identity. See [the migration/setup guide](docs/fam-keycloak-migration.md) for exact GitHub
+variables, CSS callbacks, role mapping, acceptance and rollback steps.
 
-| Half | Switch | Where |
-|---|---|---|
-| Frontend | `mockUser: true` | `frontend/public/amplify-config.js` — on in the example template |
-| Backend | `AUTH_MOCK_ENABLED=true` | `.env` — on in `.env.example` |
-
-**Frontend half.** `mockUser` is only honoured when the app is served from localhost
-(`frontend/src/env.ts` re-checks the hostname), so it cannot weaken a deployed environment.
-It is read as `mockUser === true`: if `amplify-config.js` is missing the key — or the file
-itself is absent, as in a fresh clone — mock mode is **off** and you get a real Cognito login
-screen. A config copied from a deployment won't have it either — deployments set it false — so
-add it by hand, or start from the template, which has it on. See
-[step 2](#running-locally-with-docker-compose).
-
-**Backend half.** `AUTH_MOCK_ENABLED` defaults to on under the `local` profile. Under the
-`prod` profile `application.yml` sets it off, but the environment variable overrides that
-(env vars outrank profile YAML in Spring Boot), so setting it in `.env` works under either
-profile.
-
-With the backend half off, the frontend shows a fake logged-in user but every API call is
-rejected with 401 — `/api/health` still returns 200, so the backend looks healthy. The mock
-user's roles come from `AUTH_MOCK_ROLES` (default `ADMIN`); see
-[Roles and permissions](#roles-and-permissions).
-
-**Running with real Cognito auth locally**
-
-1. Set `AUTH_MOCK_ENABLED=false` in `.env` and fill in `JWT_JWKS_URI`, `JWT_ISSUER`, and
-   `JWT_AUDIENCE`. They must point at the same Cognito User Pool the frontend uses.
-2. In `frontend/public/amplify-config.js`, set `"mockUser": false` (or remove the key) and make
-   sure the Cognito values are current. The simplest way to be sure is to take them from a
-   deployed environment — see [step 2](#running-locally-with-docker-compose).
-
-Keep `redirectSignIn` / `redirectSignOut` pointed at localhost, and note that both must be
-registered with FAM for local sign-in to work at all. Cognito values (User Pool ID, client ID,
-domain, IDP name) are owned by the FAM team / DevOps; the canonical rendering of the whole set
-is the ConfigMap template in `common/openshift.init.yml`.
-
-> **How sign-out works.** Signing out drives a federated logout chain — SiteMinder → Keycloak → Cognito → back to the app at `/logout`, which immediately redirects to the welcome screen — built at runtime from the `logout*` values above (see `frontend/src/utils/logoutChain.ts`; same pattern as FAM's own console). This clears all three upstream sessions, not just Cognito's. Two registration constraints, both owned by FAM (`oidc_clients_csp.tf` in [nr-forests-access-management](https://github.com/bcgov/nr-forests-access-management)): `redirectSignOut` must be registered verbatim as a Cognito sign-out URL, and the Cognito domain must be on the shared Keycloak client's post-logout allow-list. If the `logout*` values are missing, the app falls back to a Cognito-only Amplify sign-out. Test/prod use `test.loginproxy`/`loginproxy` and (prod) `logon7` hosts — see the `LOGOUT_*` GitHub variables. Sign-out also briefly opens a small popup against loginproxy's `idir` broker realm: that realm holds a fourth session the chain cannot reach (its logout endpoint rejects redirect chaining and its pages are not frameable), and without clearing it the next sign-in silently logs the user back in without prompting for credentials.
-
-> In OpenShift, Cognito config is injected at runtime via a ConfigMap. The file is git-ignored,
-> so CI builds an image without it; the ConfigMap defined in `common/openshift.init.yml` is
-> mounted over `/usr/share/caddy/amplify-config.js` by `frontend/openshift.deploy.yml`. No
-> rebuild is required when Cognito values change — only a rollout.
+Local mock mode requires both `mockUser: true` in `frontend/public/config.js` and
+`AUTH_MOCK_ENABLED=true` in the backend. The frontend also verifies a localhost origin.
+Mock mode does not need SSO configuration. Real mode requires `CSP_OIDC_ISSUER_URI` and
+`CSP_OIDC_CLIENT_ID` in both backend and frontend configuration.
 
 ## Roles and permissions
 
-CSP has three roles, granted through Cognito groups assigned by FAM. The group name is the
-`famClientId` prefix plus the role, so with `famClientId: "CSP"`:
+CSP retains three IDIR staff roles from the approved CSP client:
 
-| Cognito group | Role | Scope |
-|---|---|---|
-| `CSP_ADMIN` | `ADMIN` | Everything, including ESF submission upload |
-| `CSP_APPROVE` | `APPROVE` | Review actions — approve, reject, unapprove, cancel |
-| `CSP_VIEW` | `VIEW` | Read-only: search, view, generate reports |
+| FAM code | Internal role | Existing permission set |
+| --- | --- | --- |
+| `CSP_ADMIN` | `ADMIN` | Existing admin permissions |
+| `CSP_APPROVE` | `APPROVE` | Existing entry and review permissions |
+| `CSP_VIEW` | `VIEW` | Existing read/export permissions |
 
-**The match is by suffix, not by exact name.** A group grants a role when it *equals* the role
-name or *ends with* `_<ROLE>`, compared case-insensitively — so `ADMIN`, `CSP_ADMIN` and
-`NRS_CSP_ADMIN` all grant `ADMIN`. The group names above are just the conventional FAM form.
-Backend and frontend apply the same rule (`JwtService.matchesRole`, `RealAuthProvider`).
+Role codes must match exactly (case-insensitive). Bare or foreign-app roles grant no CSP
+access. Business BCeID industry capabilities/client scope remain a separate authorization
+work package and do not inherit these staff permissions.
 
 Authorization is **action-level, not role-level**. Controllers declare the specific action they
 need and a role→action map decides:
@@ -521,9 +455,7 @@ browsers — you must run the install above explicitly.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| App shows a Cognito login screen instead of a mock user | `frontend/public/amplify-config.js` missing or has no `mockUser` key | `cp frontend/public/amplify-config.example.js frontend/public/amplify-config.js` |
 | UI loads, user looks signed in, but every API call returns 401 | Backend mock auth off — only the frontend half is on | Set `AUTH_MOCK_ENABLED=true` in `.env` and restart the backend |
-| Backend won't start; frontend never comes up either | DB unreachable, or `JWT_JWKS_URI` empty — both fail at startup on **any** profile, and the frontend waits on the backend's health check | Point at a working DB and give `JWT_JWKS_URI` a valid URL (any placeholder under mock auth) |
 | Pod is "healthy" but every request fails | `/api/health` returns a hardcoded `UP` and never touches the DB — and it is the liveness probe | Check the backend logs; don't trust health for DB state |
 | `PKIX path building failed` / certificate errors from Oracle | JDBC URL uses the short `@//host:port/service` form, bypassing the wallet | Use the TCPS descriptor form — see `.env.example` |
 | `ORA-12514` right after starting the seeded DB container | Oracle listener still coming up; `docker ps` reports `Up` early | Wait ~40 s and poll for a real connection |
@@ -581,9 +513,6 @@ The following secrets and variables must be configured on the repository for the
 | `SPRING_DATASOURCE_USERNAME` | Oracle username |
 | `SPRING_DATASOURCE_PASSWORD` | Oracle password |
 | `KEYSTORE_SECRET` | Used by the init container to authenticate against the Oracle keystore |
-| `JWT_JWKS_URI` | Cognito JWKS endpoint URL |
-| `JWT_ISSUER` | JWT issuer claim |
-| `JWT_AUDIENCE` | JWT audience claim |
 | `OC_NAMESPACE` | OpenShift namespace to deploy into |
 | `OC_TOKEN` | OpenShift service account token (repo-level fallback) |
 | `SONAR_TOKEN_BACKEND` | SonarCloud token for backend analysis |
@@ -598,49 +527,10 @@ The following secrets and variables must be configured on the repository for the
 
 **Variables**
 
-GitHub variable names are **lowercase**; the uppercase names you see in the workflows are
-OpenShift template parameters, not variables.
-
-Scope depends on **which job reads the variable**, and this is a real trap:
-
-- The **init** job has `environment:` attached (`reusable-deploy.yml:12`), so variables it
-  reads may be scoped per environment, with a repo-level value as the fallback for PR deploys.
-- The **deploy** job reads its variables inside a `matrix`, which GitHub evaluates *before*
-  the environment is attached. An environment-scoped value is **silently ignored** there, so
-  those variables must be set at repo level.
-
-This is why the `amplify-config` ConfigMap is built in `common/openshift.init.yml` rather than
-in the frontend deploy template — see the note at `common/openshift.init.yml:53`.
-
-| Variable | Read by | Description |
-|---|---|---|
-| `OC_SERVER` | both | OpenShift API server URL |
-| `OPENSHIFT_APPS_DOMAIN` | both | Optional — cluster apps domain; defaults to `apps.gold.devops.gov.bc.ca` |
-| `app_env` | init | Environment label injected into the frontend config (`dev`, `test`, `prod`) |
-| `cognito_idp_name` | init | Cognito identity provider name (`DEV-IDIR`, `TEST-IDIR`, `PROD-IDIR`) |
-| `cognito_region` | init | AWS region for Cognito (e.g. `ca-central-1`) |
-| `cognito_user_pool_id` | init | Cognito User Pool ID |
-| `cognito_user_pool_client_id` | init | Cognito App Client ID — differs per environment |
-| `cognito_domain` | init | Cognito hosted UI domain; also used in the Caddy CSP header |
-| `cognito_oauth_scopes` | init | OAuth scopes, comma-separated (e.g. `openid,profile,email`) |
-| `fam_client_id` | init | FAM application client ID for role-group mapping |
-| `logout_siteminder_url` | init | SiteMinder `logoff.cgi` URL — first hop of the sign-out chain |
-| `logout_keycloak_url` | init | Keycloak end-session endpoint — second hop of the sign-out chain |
-| `logout_keycloak_client_id` | init | FAM's shared Keycloak client ID |
-| `frontend_log_level` | init | Optional — Caddy log level (default `INFO`) |
-| `backend_log_level`, `backend_root_log_level`, `backend_spring_log_level`, `backend_spring_security_log_level` | **deploy (matrix)** | Optional — backend log levels (defaults `INFO`, `INFO`, `INFO`, `WARN`). Must be repo-level |
-
-> `JWT_JWKS_URI` is declared optional in `reusable-deploy.yml`, but the backend will not start
-> without it.
-
-> The Cognito redirect URLs are **not** variables. `reusable-deploy.yml` derives them from the
-> repository name and apps domain (`https://<repo>-<zone>.<domain>` and `.../logout`), so each
-> PR, test, and prod environment gets its own pair. Both must be registered with FAM for the
-> environment or sign-in/sign-out will fail.
-
-> Every variable in this table feeds the `amplify-config` ConfigMap template in
-> `common/openshift.init.yml`. A missing one renders as an empty string rather than failing
-> the deploy, which usually surfaces later as a broken sign-in or sign-out.
+Set `CSP_OIDC_ISSUER_URI` and `CSP_OIDC_CLIENT_ID` in the `dev`, `test`, and `prod`
+GitHub Environments. Auth configuration is generated by the environment-bound init job.
+Keep existing database/OpenShift/logging settings. The complete retirement and rollback
+instructions are in [Modern FAM authentication](docs/fam-keycloak-migration.md).
 
 ## Further documentation
 

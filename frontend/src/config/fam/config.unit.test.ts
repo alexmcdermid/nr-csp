@@ -1,17 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-type AmplifyConfig = NonNullable<typeof globalThis.amplifyConfig>;
-
-const baseConfig: AmplifyConfig = {
-  appEnv: 'test',
-  idpName: 'TEST-IDIR',
-  region: 'ca-central-1',
-  userPoolId: 'pool',
-  userPoolClientId: 'client',
-  cognitoDomain: 'auth.example.com',
-  redirectSignIn: 'https://example.com/',
-  redirectSignOut: 'https://example.com/logout',
-};
+const baseConfig = { appEnv: 'dev', oidcIssuerUri: 'https://sso.test/realms/standard', oidcClientId: 'csp-browser' };
 
 /** Re-imports the module so its module-level reads re-run with current globals. */
 async function importFamConfig() {
@@ -22,11 +11,11 @@ async function importFamConfig() {
 
 describe('famConfig', () => {
   afterEach(() => {
-    globalThis.amplifyConfig = undefined;
+    globalThis.appConfig = undefined;
   });
 
-  it('reads clientId and environment from globalThis.amplifyConfig', async () => {
-    globalThis.amplifyConfig = { ...baseConfig, famClientId: 'fam-client-123', appEnv: 'prod' };
+  it('reads clientId and environment from globalThis.appConfig', async () => {
+    globalThis.appConfig = { ...baseConfig, famClientId: 'fam-client-123', appEnv: 'prod' };
 
     const famConfig = await importFamConfig();
     expect(famConfig.clientId).toBe('fam-client-123');
@@ -34,15 +23,15 @@ describe('famConfig', () => {
   });
 
   it('defaults clientId to empty string when famClientId is missing', async () => {
-    globalThis.amplifyConfig = { ...baseConfig };
+    globalThis.appConfig = { ...baseConfig, appEnv: 'test' };
 
     const famConfig = await importFamConfig();
     expect(famConfig.clientId).toBe('');
     expect(famConfig.environment).toBe('test');
   });
 
-  it('falls back to empty clientId and "dev" environment without amplifyConfig', async () => {
-    globalThis.amplifyConfig = undefined;
+  it('falls back to empty clientId and "dev" environment without appConfig', async () => {
+    globalThis.appConfig = undefined;
 
     const famConfig = await importFamConfig();
     expect(famConfig.clientId).toBe('');

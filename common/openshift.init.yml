@@ -34,15 +34,13 @@ parameters:
   - name: JAVA_OPTS
     description: JVM options
     value: "-XX:MaxRAMPercentage=75.0 -XX:+UseContainerSupport"
-  - name: JWT_JWKS_URI
-    description: JWKS endpoint for JWT validation
-    value: ""
-  - name: JWT_ISSUER
-    description: Expected JWT issuer claim
-    value: ""
-  - name: JWT_AUDIENCE
-    description: Expected JWT audience claim
-    value: ""
+  - name: CSP_OIDC_ISSUER_URI
+    description: CSS issuer from this environment's installation JSON
+    required: true
+  - name: CSP_OIDC_CLIENT_ID
+    description: Public CSS client ID (installation JSON resource)
+    required: true
+
   - name: AUTH_MOCK_ENABLED
     description: Set to true to bypass real authentication (local/dev only)
     value: "false"
@@ -50,60 +48,18 @@ parameters:
     description: Comma-separated roles injected when AUTH_MOCK_ENABLED=true
     value: ""
 
-  # ── Frontend amplify config ───────────────────────────────
-  # Lives here (not in frontend/openshift.deploy.yml) so the values are
-  # processed by the init step, where environment-scoped GitHub variables
-  # resolve. The deploy job reads vars inside a matrix, which GitHub
-  # evaluates before the environment is attached — env-scoped values are
-  # silently ignored there.
+  # Public browser configuration is generated in the environment-bound init job.
   - name: APP_ENV
-    description: Application environment label (dev, test, prod)
+    description: Application environment (dev, test, prod)
     value: dev
-  - name: COGNITO_IDP_NAME
-    description: Cognito identity provider name (DEV-IDIR, TEST-IDIR, PROD-IDIR)
-    value: DEV-IDIR
-  - name: COGNITO_REGION
-    description: AWS region for Cognito
-    value: ca-central-1
-  - name: COGNITO_USER_POOL_ID
-    description: Cognito user pool ID
-    required: true
-  - name: COGNITO_USER_POOL_CLIENT_ID
-    description: Cognito app client ID (differs per environment)
-    required: true
-  - name: COGNITO_DOMAIN
-    description: Cognito hosted UI domain (no https://)
-    required: true
-  - name: COGNITO_OAUTH_SCOPES
-    description: Comma-separated OAuth scopes
-    value: openid,profile,email
-  - name: COGNITO_REDIRECT_SIGN_IN
-    description: Post-login redirect URL
-    required: true
-  # Cognito validates logout_uri by exact string match against the FAM client's
-  # registered sign-out URLs (FAM repo: lza-infrastructure/terraform/server/
-  # oidc_clients_csp.tf), so this plain <app>/logout URL must be registered
-  # there verbatim or Cognito bounces the user to /login with "Required
-  # parameters missing". That registration is why the value stays /logout even
-  # though the app renders nothing there and redirects straight to the welcome
-  # screen. The frontend builds the full federated logout chain
-  # (SiteMinder → Keycloak → Cognito → this URL) at runtime from the
-  # LOGOUT_* parameters below — see frontend/src/utils/logoutChain.ts.
-  - name: COGNITO_REDIRECT_SIGN_OUT
-    description: Post-logout redirect URL (plain <app>/logout, FAM-registered)
-    required: true
-  - name: LOGOUT_SITEMINDER_URL
-    description: SiteMinder logoff.cgi base URL (first hop of the logout chain)
+  - name: OIDC_IDIR_HINT
+    value: azureidir
+  - name: OIDC_BCEID_HINT
+    value: bceidbusiness
+  - name: OIDC_SITEMINDER_LOGOUT_URL
+    description: Optional SiteMinder logoff override
     value: ""
-  - name: LOGOUT_KEYCLOAK_URL
-    description: Keycloak end-session endpoint (second hop of the logout chain)
-    value: ""
-  - name: LOGOUT_KEYCLOAK_CLIENT_ID
-    description: FAM's shared Keycloak client id (fsa-cognito-idir-…)
-    value: ""
-  - name: FAM_CLIENT_ID
-    description: FAM application client ID (Cognito group prefix, e.g. CSP)
-    required: true
+
   - name: FRONTEND_LOG_LEVEL
     description: Caddy runtime log level (DEBUG, INFO, WARN, ERROR)
     value: INFO
@@ -135,9 +91,8 @@ objects:
       DATABASE_SERVICE_NAME: ${DATABASE_SERVICE_NAME}
       SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE}
       JAVA_OPTS: ${JAVA_OPTS}
-      JWT_JWKS_URI: ${JWT_JWKS_URI}
-      JWT_ISSUER: ${JWT_ISSUER}
-      JWT_AUDIENCE: ${JWT_AUDIENCE}
+      CSP_OIDC_ISSUER_URI: ${CSP_OIDC_ISSUER_URI}
+      CSP_OIDC_CLIENT_ID: ${CSP_OIDC_CLIENT_ID}
       AUTH_MOCK_ENABLED: ${AUTH_MOCK_ENABLED}
       AUTH_MOCK_ROLES: ${AUTH_MOCK_ROLES}
 
@@ -151,36 +106,29 @@ objects:
         app.kubernetes.io/instance: ${ZONE}
     data:
       LOG_LEVEL: ${FRONTEND_LOG_LEVEL}
+      OIDC_ISSUER_URI: ${CSP_OIDC_ISSUER_URI}
 
-  # ── Frontend amplify ConfigMap (runtime-injected, overrides the
+  # ── Frontend OIDC ConfigMap (runtime-injected, overrides the
   #    build-time placeholder; mounted by the frontend Deployment) ──
   - apiVersion: v1
     kind: ConfigMap
     metadata:
-      name: ${NAME}-frontend-amplify-config-${ZONE}
+      name: ${NAME}-frontend-config-${ZONE}
       labels:
         app: ${NAME}-frontend-${ZONE}
         app.kubernetes.io/instance: ${ZONE}
     data:
-      amplify-config.js: |
-        window.amplifyConfig = {
-          "appEnv": "${APP_ENV}",
-          "idpName": "${COGNITO_IDP_NAME}",
-          "region": "${COGNITO_REGION}",
-          "userPoolId": "${COGNITO_USER_POOL_ID}",
-          "userPoolClientId": "${COGNITO_USER_POOL_CLIENT_ID}",
-          "cognitoDomain": "${COGNITO_DOMAIN}",
-          "oauthScopes": "${COGNITO_OAUTH_SCOPES}".split(','),
-          "redirectSignIn": "${COGNITO_REDIRECT_SIGN_IN}",
-          "redirectSignOut": "${COGNITO_REDIRECT_SIGN_OUT}",
-          "logoutSiteminderUrl": "${LOGOUT_SITEMINDER_URL}",
-          "logoutKeycloakUrl": "${LOGOUT_KEYCLOAK_URL}",
-          "logoutKeycloakClientId": "${LOGOUT_KEYCLOAK_CLIENT_ID}",
-          "mockUser": false,
-          "famClientId": "${FAM_CLIENT_ID}"
+      config.js: |
+        window.appConfig = {
+          mockUser: false,
+          appEnv: '${APP_ENV}',
+          oidcIssuerUri: '${CSP_OIDC_ISSUER_URI}',
+          oidcClientId: '${CSP_OIDC_CLIENT_ID}',
+          oidcIdirHint: '${OIDC_IDIR_HINT}',
+          oidcBceidHint: '${OIDC_BCEID_HINT}',
+          oidcSiteminderLogoutUrl: '${OIDC_SITEMINDER_LOGOUT_URL}',
         };
 
-  # ── NetworkPolicy: ingress from OpenShift router ──────────
   - apiVersion: networking.k8s.io/v1
     kind: NetworkPolicy
     metadata:

@@ -79,19 +79,17 @@ export default function App() {
                         of the shell's kind) */}
                     <Route path={ROUTES.LANDING} element={<WelcomePage />} />
 
-                    {/* Nothing renders at /logout, but the route has to exist: the
-                        federated logout chain's return URL is fixed at <app>/logout
-                        (`redirectSignOut` is matched verbatim against FAM's
-                        registered Cognito sign-out URLs), so this is where the
-                        browser lands after a sign-out. Bounce it to the welcome
-                        screen — `replace` keeps /logout out of the history, so Back
-                        doesn't return to a URL with nothing on it. An expired
-                        session says so there, via the reason stashed before the
-                        chain ran (see signOutReason). */}
+                    {/* Older /logout bookmarks return to the welcome screen. CSS logout returns directly to root. */}
                     <Route path={ROUTES.LOGOUT} element={<Navigate to={ROUTES.LANDING} replace />} />
 
                     {/* All other routes share the shell layout and require authentication */}
-                    <Route element={<Layout />}>
+                    <Route
+                      element={
+                        <ProtectedRoute>
+                          <Layout />
+                        </ProtectedRoute>
+                      }
+                    >
                       <Route
                         path={ROUTES.SEARCH}
                         element={

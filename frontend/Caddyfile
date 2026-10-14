@@ -94,11 +94,7 @@
 		# forms (API calls are fetch/XHR and the Amplify sign-in/sign-out flow is
 		# GET redirects), so 'self' costs nothing.
 		#
-		# connect-src covers two Cognito hosts the SPA calls via fetch/XHR:
-		# {$COGNITO_DOMAIN} for the hosted-UI OAuth token exchange, and the
-		# regional cognito-idp API for Amplify's silent token refresh once the
-		# short-lived access/ID token expires — without it, the browser blocks
-		# the refresh call and the user gets bounced to sign-in every ~5 min.
-		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://{$COGNITO_DOMAIN} https://cognito-idp.{$COGNITO_REGION}.amazonaws.com; frame-ancestors 'none'; base-uri 'self'; object-src 'none'; form-action 'self'"
+		# Only this environment's CSS realm handles discovery, token exchange and refresh.
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' {$OIDC_ISSUER_URI}/; frame-ancestors 'none'; base-uri 'self'; object-src 'none'; form-action 'self'"
 	}
 }

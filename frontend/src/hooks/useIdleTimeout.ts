@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 
 const CHANNEL_NAME = 'csp-auth-idle';
 const ACTIVITY_EVENTS = ['mousemove', 'mousedown', 'keydown', 'touchstart', 'scroll'] as const;
@@ -14,6 +14,7 @@ interface UseIdleTimeoutOptions {
   timeoutMs: number;
   /** Called when this tab (or another tab, via broadcast) goes idle. */
   onTimeout: () => void;
+  onActivity?: () => void;
 }
 
 /**
@@ -21,7 +22,9 @@ interface UseIdleTimeoutOptions {
  * token TTL. Activity in any browser tab resets the timer in every tab, and
  * going idle in any tab logs all tabs out together.
  */
-export function useIdleTimeout({ enabled, timeoutMs, onTimeout }: UseIdleTimeoutOptions): void {
+export function useIdleTimeout({ enabled, timeoutMs, onTimeout, onActivity }: UseIdleTimeoutOptions): void {
+  const activityRef = useRef(onActivity);
+  activityRef.current = onActivity;
   useEffect(() => {
     if (!enabled) return;
 
@@ -42,6 +45,7 @@ export function useIdleTimeout({ enabled, timeoutMs, onTimeout }: UseIdleTimeout
       const now = Date.now();
       if (now - lastActivityBroadcast < ACTIVITY_THROTTLE_MS) return;
       lastActivityBroadcast = now;
+      activityRef.current?.();
       channel.postMessage({ type: 'activity' } satisfies IdleMessage);
     }
 

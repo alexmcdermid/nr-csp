@@ -16,7 +16,7 @@ import { ROUTES } from '@/routes/routePaths';
 import './index.scss';
 
 export function WelcomePage() {
-  const { isAuthenticated, isLoading, signIn } = useAuth();
+  const { isAuthenticated, isLoading, signIn, loginError } = useAuth();
   const { addNotification } = useNotification();
   const isCallbackPending = useOauthCallbackPending();
 
@@ -62,12 +62,12 @@ export function WelcomePage() {
   if (isAuthenticated) return <Navigate to={ROUTES.SEARCH} replace />;
   if (isLoading || isCallbackPending) return <LoadingScreen />;
 
-  const startIdirLogin = () =>
-    void signIn().catch(() =>
+  const startLogin = (provider: 'idir' | 'business-bceid') =>
+    void signIn(provider).catch(() =>
       addNotification({
         kind: 'error',
-        title: 'Could not start the IDIR login',
-        subtitle: 'Please try again, or reload the page if this keeps happening.',
+        title: 'Could not start sign-in',
+        subtitle: 'Please try again.',
       }),
     );
 
@@ -77,8 +77,15 @@ export function WelcomePage() {
         <img className="welcome-page__logo" src={bcGovLogo} alt="Government of British Columbia" />
         <h1 className="welcome-page__heading">Welcome to CSP</h1>
         <p className="welcome-page__subheading">Coast Selling Price System</p>
+        {loginError && <p role="alert">{loginError}</p>}
         <div className="welcome-page__actions">
-          <Button kind="primary" size="lg" renderIcon={Login} className="welcome-page__action" onClick={startIdirLogin}>
+          <Button
+            kind="primary"
+            size="lg"
+            renderIcon={Login}
+            className="welcome-page__action"
+            onClick={() => startLogin('idir')}
+          >
             Log in with IDIR
           </Button>
           <Button
@@ -86,13 +93,7 @@ export function WelcomePage() {
             size="lg"
             renderIcon={Login}
             className="welcome-page__action"
-            onClick={() =>
-              addNotification({
-                kind: 'info',
-                title: 'Business BCeID login is not available yet',
-                subtitle: 'Please log in with IDIR to continue.',
-              })
-            }
+            onClick={() => startLogin('business-bceid')}
           >
             Log in with Business BCeID
           </Button>

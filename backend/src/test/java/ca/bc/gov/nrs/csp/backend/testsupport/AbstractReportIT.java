@@ -35,7 +35,7 @@ import java.util.Map;
         properties = {
                 "security.jwt.jwks-uri=https://localhost/.well-known/jwks.json",
                 "security.jwt.issuer=https://localhost/test-issuer",
-                "security.jwt.audience=csp-integration-test",
+                "security.jwt.client-id=csp-integration-test",
                 "auth.mock.enabled=true",
                 "auth.mock.username=it-user",
                 "auth.mock.roles=ADMIN"

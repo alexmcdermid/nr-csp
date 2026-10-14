@@ -1,17 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-type AmplifyConfig = NonNullable<typeof globalThis.amplifyConfig>;
-
-const baseConfig: AmplifyConfig = {
-  appEnv: 'test',
-  idpName: 'TEST-IDIR',
-  region: 'ca-central-1',
-  userPoolId: 'pool',
-  userPoolClientId: 'client',
-  cognitoDomain: 'auth.example.com',
-  redirectSignIn: 'https://example.com/',
-  redirectSignOut: 'https://example.com/logout',
-};
+const baseConfig = { appEnv: 'dev', oidcIssuerUri: 'https://sso.test/realms/standard', oidcClientId: 'csp-browser' };
 
 /** Re-imports src/env.ts so its module-level logic re-runs with current globals. */
 async function importEnv() {
@@ -26,16 +15,16 @@ function stubHostname(hostname: string) {
 
 describe('env', () => {
   beforeEach(() => {
-    globalThis.amplifyConfig = undefined;
+    globalThis.appConfig = undefined;
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
-    globalThis.amplifyConfig = undefined;
+    globalThis.appConfig = undefined;
   });
 
   it('enables mockUser when opted in and served from localhost', async () => {
-    globalThis.amplifyConfig = { ...baseConfig, mockUser: true };
+    globalThis.appConfig = { ...baseConfig, mockUser: true };
     stubHostname('localhost');
 
     const env = await importEnv();
@@ -43,7 +32,7 @@ describe('env', () => {
   });
 
   it('enables mockUser on a *.localhost subdomain', async () => {
-    globalThis.amplifyConfig = { ...baseConfig, mockUser: true };
+    globalThis.appConfig = { ...baseConfig, mockUser: true };
     stubHostname('csp.localhost');
 
     const env = await importEnv();
@@ -51,7 +40,7 @@ describe('env', () => {
   });
 
   it('disables mockUser on a non-local host even when opted in', async () => {
-    globalThis.amplifyConfig = { ...baseConfig, mockUser: true };
+    globalThis.appConfig = { ...baseConfig, mockUser: true };
     stubHostname('csp.nrs.gov.bc.ca');
 
     const env = await importEnv();
@@ -59,7 +48,7 @@ describe('env', () => {
   });
 
   it('disables mockUser on localhost without the runtime opt-in', async () => {
-    globalThis.amplifyConfig = { ...baseConfig, mockUser: false };
+    globalThis.appConfig = { ...baseConfig, mockUser: false };
     stubHostname('localhost');
 
     const env = await importEnv();
@@ -67,14 +56,14 @@ describe('env', () => {
   });
 
   it('disables mockUser when window is undefined (non-browser context)', async () => {
-    globalThis.amplifyConfig = { ...baseConfig, mockUser: true };
+    globalThis.appConfig = { ...baseConfig, mockUser: true };
     vi.stubGlobal('window', undefined);
 
     const env = await importEnv();
     expect(env.mockUser).toBe(false);
   });
 
-  it('defaults mockUser to false and appEnv to "dev" without amplifyConfig', async () => {
+  it('defaults mockUser to false and appEnv to "dev" without appConfig', async () => {
     stubHostname('localhost');
 
     const env = await importEnv();
@@ -82,8 +71,8 @@ describe('env', () => {
     expect(env.appEnv).toBe('dev');
   });
 
-  it('reads appEnv from amplifyConfig when present', async () => {
-    globalThis.amplifyConfig = { ...baseConfig, appEnv: 'prod' };
+  it('reads appEnv from appConfig when present', async () => {
+    globalThis.appConfig = { ...baseConfig, appEnv: 'prod' };
     stubHostname('localhost');
 
     const env = await importEnv();
@@ -99,15 +88,15 @@ describe('env', () => {
     expect(env.isDevelopment).not.toBe(env.isProduction);
   });
 
-  it('defaults idleTimeoutMs to 30 minutes without amplifyConfig', async () => {
+  it('defaults idleTimeoutMs to 30 minutes without appConfig', async () => {
     stubHostname('localhost');
 
     const env = await importEnv();
     expect(env.idleTimeoutMs).toBe(30 * 60_000);
   });
 
-  it('reads idleTimeoutMinutes from amplifyConfig when present', async () => {
-    globalThis.amplifyConfig = { ...baseConfig, idleTimeoutMinutes: 90 };
+  it('reads idleTimeoutMinutes from appConfig when present', async () => {
+    globalThis.appConfig = { ...baseConfig, idleTimeoutMinutes: 90 };
     stubHostname('localhost');
 
     const env = await importEnv();

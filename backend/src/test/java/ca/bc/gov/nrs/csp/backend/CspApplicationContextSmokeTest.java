@@ -27,7 +27,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * provider fetches keys lazily, so nothing is contacted).
  */
 @SpringBootTest(properties = {
-        "security.jwt.jwks-uri=https://localhost/.well-known/jwks.json"
+        "security.jwt.jwks-uri=https://localhost/protocol/openid-connect/certs",
+        "security.jwt.issuer=https://localhost/auth/realms/standard",
+        "security.jwt.client-id=csp-smoke"
 })
 class CspApplicationContextSmokeTest {
 

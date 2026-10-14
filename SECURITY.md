@@ -40,34 +40,38 @@ you add one.
 
 ### Authentication and authorization
 
-- Users sign in with IDIR through AWS Cognito, federated by FAM. The frontend uses Amplify and
-  sends the Cognito **ID token** as a bearer token on every `/api` call.
-- The backend validates each JWT's signature against the Cognito JWKS endpoint (key selected by
-  `kid`), and checks issuer and audience when configured — `JWT_JWKS_URI`, `JWT_ISSUER`,
-  `JWT_AUDIENCE`. **Always set all three in a deployed environment.**
-- Roles (`VIEW`, `APPROVE`, `ADMIN`) come from the `cognito:groups` claim. A group grants a role
-  when it equals the role name or ends with `_<ROLE>` — so `CSP_ADMIN` grants `ADMIN`. Note this
-  is a **suffix match**, so any group ending `_ADMIN` from any issuer in the pool would also
-  grant it.
-- Write endpoints are guarded with `@PreAuthorize` through `PermissionService`. Every other
-  `/api/**` endpoint requires an authenticated user, except `/api/health` and the OpenAPI docs,
-  which are public. Read, report, search, and lookup endpoints are **authentication-only** —
-  they do not check a role.
+- Browser login uses BC Gov SSO (CSS Keycloak) with FAM-managed roles. `oidc-client-ts` uses
+  authorization code with PKCE and a public client, stores OIDC state in tab-scoped
+  `sessionStorage`, and sends the **access token** as a bearer token on `/api` calls.
+- The backend requires `CSP_OIDC_ISSUER_URI` and `CSP_OIDC_CLIENT_ID` when real authentication
+  is enabled. It validates the RS256 signature against the realm's JWKS (key selected by `kid`),
+  exact issuer and `azp`, `typ=Bearer`, expiry, supported identity provider, and audit username.
+- Roles come from `client_roles`, falling back to `resource_access.<configured client>.roles`.
+  Only exact `CSP_VIEW`, `CSP_APPROVE`, and `CSP_ADMIN` codes, matched case-insensitively, grant
+  the internal `VIEW`, `APPROVE`, and `ADMIN` authorities to IDIR/IDIR MFA identities. Bare roles,
+  suffix aliases, foreign-app roles, and `FAM:` bookkeeping roles grant no access. Business BCeID
+  can authenticate but receives no staff capability; industry role/client scope remains separate.
+- All `/api/**` endpoints require one of those staff authorities, except the public `/api/health`
+  and Swagger/OpenAPI paths. Write endpoints also use `@PreAuthorize` through `PermissionService`
+  for action-level checks. The frontend's No CSP access screen is a UX gate; API checks enforce
+  authorization.
 - Sessions are stateless: no cookie, no server-side session. CSRF protection is disabled
   deliberately, which is correct for bearer-token auth with no browser-automatable credential.
-- Signing out runs the full federated chain (SiteMinder → Keycloak → Cognito), clearing the
-  upstream IDIR sessions rather than only the Cognito one.
-- Idle sessions sign out after `idleTimeoutMinutes` (default 30).
+- Signing out clears local OIDC credentials and redirects through SiteMinder and the configured
+  CSS realm back to `/`, using `id_token_hint` when available. There is no legacy broker popup.
+- Idle sessions sign out after `idleTimeoutMinutes` (default 30), independently of token expiry.
+  Requests and user activity share token renewal. Expired/revoked refresh tokens end the session;
+  temporary SSO/network failures preserve the credentials for recovery.
 
 ### Mock authentication — local development only
 
-Mock auth bypasses Cognito entirely and authenticates every request as `local-dev-user` with
+Mock auth bypasses CSS authentication and authenticates every request as `local-dev-user` with
 the roles in `AUTH_MOCK_ROLES`. Four independent things keep it out of deployed environments:
 
 1. `MockRequestFilter` is annotated `@ConditionalOnProperty(name = "auth.mock.enabled",
    havingValue = "true")`, so the filter bean does not exist unless explicitly enabled.
 2. The backend `prod` profile sets `auth.mock.enabled: false`.
-3. OpenShift deploys `AUTH_MOCK_ENABLED=false`, and the generated `amplify-config.js` sets
+3. OpenShift deploys `AUTH_MOCK_ENABLED=false`, and the generated `config.js` sets
    `mockUser: false`.
 4. The frontend honours `mockUser` only when served from a local hostname (`localhost`,
    `127.0.0.1`, `0.0.0.0`, `::1`, or `*.localhost`), re-checked at runtime in `env.ts`.
@@ -101,9 +105,8 @@ the roles in `AUTH_MOCK_ROLES`. Four independent things keep it out of deployed 
 Caddy sets the security headers for both static responses and proxied `/api/*` responses
 (`frontend/Caddyfile`):
 
-- `Content-Security-Policy` — `default-src 'self'`, with the Cognito hosted-UI domain and the
-  regional `cognito-idp` endpoint allowed for `connect-src` (Amplify's silent token refresh
-  needs the latter), `frame-ancestors 'none'`, `object-src 'none'`.
+- `Content-Security-Policy` — `default-src 'self'`, with the configured CSS issuer path allowed
+  for `connect-src` discovery/token/refresh requests, `frame-ancestors 'none'`, `object-src 'none'`.
 - `Strict-Transport-Security` — one year, `includeSubDomains`.
 - `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`,
   `Referrer-Policy: strict-origin-when-cross-origin`.
@@ -114,10 +117,13 @@ session affinity, and the cookie was otherwise flagged by scans as `SameSite=Non
 
 ### Secrets
 
-- Credentials live only in GitHub Actions secrets and OpenShift Secrets, and are never
-  committed. `.env`, `frontend/public/amplify-config.js`, and `backend/certs/*` are git-ignored.
+- Credentials live only in GitHub Actions secrets, OpenShift Secrets, or ignored local `.env`
+  files, and are never committed. `.env` and `backend/certs/*` are git-ignored.
 - Local corporate-proxy certificates in `backend/certs/` exist only in local builds and never
   reach CI/CD images.
-- `frontend/public/amplify-config.example.js` is committed, but holds only **public client
-  identifiers** — the same values the deployed SPA serves to every browser. No secret belongs
-  in that file.
+- `frontend/public/config.js` is tracked with public localhost mock defaults;
+  `frontend/public/config.example.js` shows real-auth configuration using public issuer/client
+  metadata. Neither file may contain credentials, and machine-specific local overrides must
+  not be committed. Deployed `/config.js` is generated from GitHub Environment **variables**
+  `CSP_OIDC_ISSUER_URI` and `CSP_OIDC_CLIENT_ID`, not secrets. This public browser client has no
+  client secret. See the [migration and rollback guide](docs/fam-keycloak-migration.md).

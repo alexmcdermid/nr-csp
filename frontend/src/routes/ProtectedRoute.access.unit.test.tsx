@@ -95,9 +95,10 @@ describe('ProtectedRoute — auth states', () => {
     expect(signIn).toHaveBeenCalledTimes(1);
   });
 
-  it('renders children when authenticated', () => {
+  it('renders children when authenticated with a CSP capability', () => {
     const signIn = vi.fn();
     mockUseAuth.mockReturnValue({
+      user: { privileges: ['VIEW'] },
       isAuthenticated: true,
       isLoading: false,
       isSigningOut: false,
@@ -109,5 +110,18 @@ describe('ProtectedRoute — auth states', () => {
     expect(screen.getByText('Private Content')).toBeInTheDocument();
     expect(screen.queryByTestId('loading')).not.toBeInTheDocument();
     expect(signIn).not.toHaveBeenCalled();
+  });
+  it('denies an authenticated account without a CSP grant', () => {
+    mockUseAuth.mockReturnValue({
+      user: { privileges: [] },
+      isAuthenticated: true,
+      isLoading: false,
+      isSigningOut: false,
+      signIn: vi.fn(),
+      signOut: vi.fn(),
+    });
+    renderRoute();
+    expect(screen.getByRole('heading', { name: 'No CSP access' })).toBeInTheDocument();
+    expect(screen.queryByText('Private Content')).not.toBeInTheDocument();
   });
 });

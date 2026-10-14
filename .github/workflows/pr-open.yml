@@ -2,6 +2,7 @@ name: PR
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
 
 concurrency:
   group: ${{ github.event.number }}
@@ -52,6 +53,7 @@ jobs:
 
   deploys:
     name: Deploys (${{ github.event.number }})
+    if: (! github.event.pull_request.draft)
     needs: [builds, init]
     uses: ./.github/workflows/reusable-deploy.yml
     secrets:
@@ -63,10 +65,8 @@ jobs:
       keystore_secret: ${{ secrets.keystore_secret }}
       database_host: ${{ secrets.database_host }}
       database_service_name: ${{ secrets.database_service_name }}
-      jwt_jwks_uri: ${{ secrets.jwt_jwks_uri }}
-      jwt_issuer: ${{ secrets.jwt_issuer }}
-      jwt_audience: ${{ secrets.jwt_audience }}
     with:
+      environment: dev
       target: ${{ needs.init.outputs.zone }}
       tag: ${{ github.event.pull_request.head.sha }}
       triggers: ('backend/', 'frontend/', 'common/', '.github/workflows/')

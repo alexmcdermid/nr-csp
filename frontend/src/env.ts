@@ -1,43 +1,63 @@
+export type AppRuntimeConfig = {
+  mockUser?: boolean;
+  appEnv?: string;
+  oidcIssuerUri?: string;
+  oidcClientId?: string;
+  oidcIdirHint?: string;
+  oidcBceidHint?: string;
+  oidcSiteminderLogoutUrl?: string;
+  idleTimeoutMinutes?: number;
+  famClientId?: string;
+};
+
 declare global {
-  var amplifyConfig:
-    | {
-        appEnv: string;
-        idpName: string;
-        region: string;
-        userPoolId: string;
-        userPoolClientId: string;
-        cognitoDomain: string;
-        oauthScopes?: string[];
-        redirectSignIn: string;
-        redirectSignOut: string;
-        /** SiteMinder logoff.cgi base URL — first hop of the federated logout chain. */
-        logoutSiteminderUrl?: string;
-        /** Keycloak end-session endpoint — second hop of the federated logout chain. */
-        logoutKeycloakUrl?: string;
-        /** FAM's shared Keycloak (Cognito-as-OIDC-client) client id. */
-        logoutKeycloakClientId?: string;
-        mockUser?: boolean;
-        famClientId?: string;
-        /** Minutes of inactivity before the app signs the user out. Defaults to 30 (matches old CSP app behavior). */
-        idleTimeoutMinutes?: number;
-      }
-    | undefined;
+  var appConfig: AppRuntimeConfig | undefined;
 }
 
-// Mock authentication bypasses Cognito entirely (auto-login as ADMIN), so it is
-// permitted ONLY on a local machine. It requires BOTH the runtime opt-in
-// (mockUser: true in amplify-config.js) AND the app actually being served from
-// a local host.
-const LOCAL_HOSTNAMES = new Set(['localhost', '127.0.0.1', '0.0.0.0', '::1', '[::1]']);
-const isLocalHost =
-  globalThis.window !== undefined &&
-  (LOCAL_HOSTNAMES.has(globalThis.window.location.hostname) ||
-    globalThis.window.location.hostname.endsWith('.localhost'));
+export function getAppRuntimeConfig(): AppRuntimeConfig | undefined {
+  return globalThis.appConfig;
+}
+
+function isLocalHost(): boolean {
+  if (typeof window === 'undefined') return false;
+  const host = window.location.hostname;
+  return ['localhost', '127.0.0.1', '0.0.0.0', '::1', '[::1]'].includes(host) || host.endsWith('.localhost');
+}
+
+// Mock authentication needs both a runtime opt-in and a local browser origin.
+export function isMockAuth(): boolean {
+  return getAppRuntimeConfig()?.mockUser === true && isLocalHost();
+}
+
+const readOidcSetting = (field: keyof AppRuntimeConfig, viteKey: string): string | undefined => {
+  const runtime = getAppRuntimeConfig()?.[field];
+  return typeof runtime === 'string' && runtime.trim() ? runtime.trim() : import.meta.env[viteKey];
+};
 
 export const env = {
-  mockUser: globalThis.amplifyConfig?.mockUser === true && isLocalHost,
-  appEnv: globalThis.amplifyConfig?.appEnv ?? 'dev',
+  mockUser: isMockAuth(),
+  appEnv: getAppRuntimeConfig()?.appEnv ?? 'dev',
   isDevelopment: import.meta.env.DEV,
   isProduction: import.meta.env.PROD,
-  idleTimeoutMs: (globalThis.amplifyConfig?.idleTimeoutMinutes ?? 30) * 60_000,
-} as const;
+  idleTimeoutMs: (getAppRuntimeConfig()?.idleTimeoutMinutes ?? 30) * 60_000,
+  get VITE_OIDC_ISSUER_URI() {
+    return readOidcSetting('oidcIssuerUri', 'VITE_OIDC_ISSUER_URI');
+  },
+  get VITE_OIDC_CLIENT_ID() {
+    return readOidcSetting('oidcClientId', 'VITE_OIDC_CLIENT_ID');
+  },
+  get VITE_OIDC_IDIR_HINT() {
+    return readOidcSetting('oidcIdirHint', 'VITE_OIDC_IDIR_HINT');
+  },
+  get VITE_OIDC_BCEID_HINT() {
+    return readOidcSetting('oidcBceidHint', 'VITE_OIDC_BCEID_HINT');
+  },
+  get VITE_OIDC_SITEMINDER_LOGOUT_URL() {
+    return (
+      readOidcSetting('oidcSiteminderLogoutUrl', 'VITE_OIDC_SITEMINDER_LOGOUT_URL') ??
+      (getAppRuntimeConfig()?.appEnv === 'prod'
+        ? 'https://logon7.gov.bc.ca/clp-cgi/logoff.cgi'
+        : 'https://logontest7.gov.bc.ca/clp-cgi/logoff.cgi')
+    );
+  },
+};

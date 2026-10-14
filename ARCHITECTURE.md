@@ -34,7 +34,7 @@ day-to-day commands see [README.md](README.md); for security reporting and contr
                                     │ /api/*
                  ┌──────────────────▼──────────────────────────┐
                  │  Spring Boot 4 (backend pod)                │
-                 │   • stateless JWT auth (Cognito/FAM)        │
+                 │   • stateless JWT auth (CSS/FAM)            │
                  │   • action-level @PreAuthorize              │
                  │   • invoice domain: ESF XML + manual        │
                  │   • JasperReports → PDF / CSV / XLS         │
@@ -67,7 +67,7 @@ static responses and proxied API responses.
 | Data access | Spring `JdbcTemplate` | **No JPA/Hibernate** — see below |
 | Logging | Log4j2 | Replaces Spring's default Logback starter throughout |
 | API docs | springdoc-openapi | Swagger UI at `/api/swagger-ui.html` |
-| Auth | jjwt + `jwks-rsa` | Manual JWT validation against Cognito JWKS |
+| Auth | jjwt + `jwks-rsa` | CSS access-token validation against the configured realm's JWKS |
 | Caching | Caffeine | 11 reference-data caches, 12-hour TTL |
 | Mapping | MapStruct | DTO ↔ domain mapping |
 | Reporting | JasperReports | `.jrxml` designs; OpenPDF for PDF, Apache POI for XLS |
@@ -85,7 +85,7 @@ static responses and proxied API responses.
 | Routing | React Router 8 | |
 | Server state | TanStack React Query 5 | |
 | HTTP | Axios | |
-| Auth | AWS Amplify 6 | Cognito hosted UI |
+| Auth | `oidc-client-ts` 3.5 | Public-client PKCE login through CSS Keycloak |
 | Styling | Sass | |
 | PWA | `vite-plugin-pwa` | Service worker, auto-update |
 | Testing | Vitest 5 | Two projects: happy-dom and real Chromium |
@@ -259,7 +259,7 @@ src/
   context/      auth, theme, layout, notification, pageTitle providers
   config/       API client, FAM config, React Query defaults, test setup
   hooks/        Shared hooks
-  utils/        logoutChain and other helpers
+  utils/        Shared helpers
 ```
 
 Routes map to the domain: `Search`, `SubmissionHistory` (list and detail),
@@ -273,15 +273,16 @@ on window focus, no retry (`config/react-query/config.ts`). Table and search sta
 `sessionStorage` via `usePersistentState`. There is no Redux or other global store.
 
 **The axios client** (`config/api/request.ts`) uses `baseURL: '/api'` and a 60-second timeout.
-A `401` from the backend is treated as the one unambiguous session-expired signal and triggers
-sign-out.
+A `401` from the backend or an expired/revoked refresh token triggers sign-out. Temporary
+SSO/network renewal failures preserve credentials so the session can recover.
 
 > **No types are generated from OpenAPI.** Each `services/*.service.ts` hand-writes its
 > TypeScript types alongside the React Query hooks, so a backend DTO change has to be mirrored
 > by hand. Nothing fails at build time if you forget.
 
 The auth provider is chosen at runtime — `AuthProvider` returns a mock provider or the real
-Amplify one depending on `env.mockUser` — so no mock code paths run in a deployed environment.
+OIDC one depending on `env.mockUser`. Mock auth requires both the runtime opt-in and a local
+hostname; deployed configuration disables it.
 
 The PWA service worker uses a `navigateFallbackDenylist` for `/^\/api\//`. Without it, Workbox
 applies the SPA navigation fallback to API navigations and serves the React shell when you open
@@ -289,25 +290,35 @@ Swagger UI.
 
 ## Authentication and authorization
 
-**Sign-in.** Amplify drives the Cognito hosted UI against a FAM-managed user pool federated to
-IDIR. The SPA sends the resulting JWT as a bearer token on every `/api` call.
+**Sign-in.** `oidc-client-ts` uses authorization code with PKCE against a public CSS Keycloak
+client, with roles managed in FAM. OIDC user/state data lives in tab-scoped `sessionStorage`.
+IDIR MFA and Business BCeID use provider hints; login alone does not grant application access.
+The SPA handles `/authCallback`, restores a same-origin application route, and sends the access
+token as a bearer token on every `/api` call.
 
 **Token validation.** The backend is stateless — no sessions, no CSRF token (there is no
 browser-automatable credential to exploit, since the credential is an `Authorization` header on
-a stateless request). `JwtRequestFilter` validates the token against the Cognito JWKS using
-`jwks-rsa` and jjwt. `/api/health` and the Swagger/OpenAPI paths are public; everything else
-requires authentication.
+a stateless request). `JwtRequestFilter` and `JwtService` use `jwks-rsa` and jjwt to validate
+the CSS realm's RS256 signature, exact issuer and `azp`, `typ=Bearer`, expiry, supported
+identity provider, and directory username for auditing. Real auth requires
+`CSP_OIDC_ISSUER_URI` and `CSP_OIDC_CLIENT_ID`; the JWKS URI is derived from the issuer unless
+`CSP_OIDC_JWKS_URI` overrides it. `/api/health` and Swagger/OpenAPI paths are public; all other
+`/api/**` requests require an internal `ADMIN`, `APPROVE`, or `VIEW` authority.
 
 **Mock auth.** `MockRequestFilter` is registered only when `auth.mock.enabled` is true and
 installs a synthetic authentication with the roles from `AUTH_MOCK_ROLES`. It is an
 `Optional<MockRequestFilter>` injection, so when mock auth is off the filter does not exist in
 the context at all.
 
-**Authorization is action-level, not role-level.** Roles are `ADMIN`, `APPROVE`, `VIEW`, held
-as plain authorities with no `ROLE_` prefix. They come from the `cognito:groups` claim, matched
-by **suffix**: a group grants a role when it equals the role name or ends with `_<ROLE>`,
-case-insensitively — so `ADMIN`, `CSP_ADMIN` and `NRS_CSP_ADMIN` all grant `ADMIN`. Backend
-and frontend implement the same rule (`JwtService.matchesRole`, `RealAuthProvider`).
+**Role and action checks.** Internal roles are `ADMIN`, `APPROVE`, and `VIEW`, held as plain
+authorities with no `ROLE_` prefix. CSS roles come from `client_roles`, falling back only to
+`resource_access.<configured client>.roles`. Exact, case-insensitive `CSP_ADMIN`, `CSP_APPROVE`,
+and `CSP_VIEW` codes grant the corresponding authority to IDIR/IDIR MFA identities. Bare roles,
+suffix aliases, foreign roles, and `FAM:` bookkeeping roles grant none. Backend `JwtService`
+and frontend `famUserFromAccessToken` implement this mapping; the API enforces it.
+
+Business BCeID can authenticate but receives no CSP staff capability. Industry XML submission
+and history need a separate approved industry role and forest-client/location scope contract.
 
 Controllers declare a specific action string from the FAM permission matrix:
 
@@ -320,28 +331,30 @@ Controllers declare a specific action string from the FAM permission matrix:
 `context/auth/permissions.ts` to decide which buttons to render — **the two must be kept in
 sync**; the backend is the enforcement point and the frontend is only a UX affordance.
 
-**Sign-out** is a federated chain: SiteMinder → Keycloak → Cognito → back to `/logout`. It is
-built at runtime from the `logout*` config values (`utils/logoutChain.ts`). Clearing only
-Cognito would leave the upstream IDIR sessions alive and silently sign the user straight back
-in. A small popup against loginproxy's `idir` broker realm handles a fourth session the
-redirect chain cannot reach, because that realm's logout endpoint rejects redirect chaining and
-its pages are not frameable.
+**Session lifecycle.** `service/oidc-service.ts` shares one refresh operation between API
+requests and user activity, avoiding concurrent use of a rotating refresh token. Logout reads
+the ID-token hint before clearing local credentials, then redirects through SiteMinder and
+the configured CSS realm back to `/`. There is no legacy broker popup. The app retains its
+30-minute inactivity limit and cross-tab activity/logout messages; temporary SSO/network
+renewal failures preserve the session, while expired/revoked refresh tokens end it.
 
 ## Runtime configuration
 
 Nothing environment-specific is baked into the frontend build. The SPA reads
-`window.amplifyConfig` from `public/amplify-config.js` at runtime:
+`window.appConfig` from `public/config.js` at runtime:
 
 - **In OpenShift** — a ConfigMap defined in `common/openshift.init.yml` is mounted over
-  `/usr/share/caddy/amplify-config.js`. Changing Cognito values needs a rollout, not a rebuild.
+  `/usr/share/caddy/config.js`. Changing CSS values needs a rollout, not a rebuild.
   This template is the canonical definition of the key set.
-- **Locally** — the file is git-ignored and absent from a fresh clone, and the app throws at
-  module load without it. Developers take the rendered file from a deployed environment and
-  repoint the redirects at localhost, adding `"mockUser": true` for mock auth;
-  `amplify-config.example.js` is a committed snapshot of that result.
+- **Locally** — `public/config.js` is tracked with localhost-only mock defaults. For real DEV
+  login, use `public/config.example.js` with the provisioned DEV issuer/client and disable
+  backend mock auth. Callback and logout URLs are computed from the current browser origin.
+  These are public browser settings; never store credentials or commit machine-specific overrides.
 
 The ConfigMap is created in the **init** step rather than the deploy template, because that is
-where environment-scoped GitHub variables resolve correctly.
+where environment-scoped GitHub variables resolve correctly. `CSP_OIDC_ISSUER_URI` and
+`CSP_OIDC_CLIENT_ID` are variables in each of `dev`, `test`, and `prod`, not secrets. No new
+browser secret is required. See the [migration and rollback guide](docs/fam-keycloak-migration.md).
 
 The backend is configured by Spring profiles in `application.yml`: `local` (empty fallbacks,
 mock auth on, DEBUG logging) and `prod` (every value required, injected as env vars). Hikari
@@ -377,7 +390,7 @@ is unreachable from outside the namespace — which is also why there is no CORS
 anywhere: the SPA and the API share an origin.
 
 **Ordering.** `common/openshift.init.yml` is applied first and creates the Secrets, ConfigMaps
-(including `amplify-config.js`) and NetworkPolicies; the two deploy templates follow.
+(including `config.js`) and NetworkPolicies; the two deploy templates follow.
 
 Image rollout differs by zone. PR deploys pass the immutable head SHA as the image tag, so
 every push changes the pod spec and forces a rollout. Test and prod use the mutable PR-number

@@ -55,8 +55,6 @@ docker run -d --name csp-backend-e2e -p 8080:8080 \
   -e SPRING_DATASOURCE_URL='jdbc:oracle:thin:@//host.docker.internal:1525/DBDOCK_01' \
   -e SPRING_DATASOURCE_USERNAME=THE -e SPRING_DATASOURCE_PASSWORD=default \
   -e AUTH_MOCK_ENABLED=true -e AUTH_MOCK_ROLES=ADMIN \
-  -e JWT_JWKS_URI='https://mock-auth.invalid/.well-known/jwks.json' \
-  -e JWT_ISSUER='https://mock-auth.invalid' -e JWT_AUDIENCE='mock-audience' \
   nr-csp-backend:latest
 ```
 
@@ -82,7 +80,7 @@ Health check: `curl http://localhost:8080/api/health` → `{"status":"UP",...}`.
 cd frontend && npm start
 ```
 
-**Nothing to configure for auth.** Do **not** hand-edit `frontend/public/amplify-config.js`.
+**Nothing to configure for auth.** Do **not** hand-edit `frontend/public/config.js`.
 
 **CSP's mock auth differs from the scaffold's assumption.** `MockAuthProvider` returns
 `isAuthenticated: true` on first paint, with the role from `localStorage['csp.mockRole']` (default
@@ -90,13 +88,13 @@ cd frontend && npm start
 `page.goto()` to a protected route is safe. `pages/common/authNav.ts` is re-grounded accordingly:
 `signInAsMockUser()` seeds the role via `addInitScript` and performs no login dance.
 
-It also **injects mock auth per browser**, by intercepting the request for `/amplify-config.js` and
+It also **injects mock auth per browser**, by intercepting the request for `/config.js` and
 setting `"mockUser": true` in the response. This is deliberate. That file is served to *every*
 frontend on your machine, so editing it on disk silently switches your own dev stack to mock auth
 too — and if that stack's backend still has `AUTH_MOCK_ENABLED=false`, every API call then 401s
 while the UI looks logged in. (That happened; it presents as "the app loads but nothing works",
 which reads like a broken port rather than an auth mismatch.) Intercepting keeps the opt-in inside
-the test browser, so a developer's real Cognito login keeps working while the suite runs.
+the test browser, so a developer's real CSS login keeps working while the suite runs.
 
 ### 4. Run
 
@@ -155,7 +153,7 @@ run the e2e stack on **:3001** against the **seeded** image. Both at once; neith
 | Frontend | `:3000` (`csp-frontend`) | `:3001` (Vite) |
 | Backend | `csp-backend` (internal only) | `csp-backend-e2e` on `:8080` |
 | Database | delivery (`nrcdb03`, remote) | seeded image (`localhost:1525`) |
-| Auth | your real Cognito setup | mock, injected into the test browser only |
+| Auth | your real CSS setup | mock, injected into the test browser only |
 
 They don't collide: the compose backend does not publish a port (the frontend proxies to it over the
 compose network), so `:8080` is free for the e2e backend. And the databases were never in conflict —
@@ -200,8 +198,6 @@ docker start csp-backend-e2e 2>/dev/null || docker run -d --name csp-backend-e2e
   -e SPRING_DATASOURCE_URL='jdbc:oracle:thin:@//host.docker.internal:1525/DBDOCK_01' \
   -e SPRING_DATASOURCE_USERNAME=THE -e SPRING_DATASOURCE_PASSWORD=default \
   -e AUTH_MOCK_ENABLED=true -e AUTH_MOCK_ROLES=ADMIN \
-  -e JWT_JWKS_URI='https://mock-auth.invalid/.well-known/jwks.json' \
-  -e JWT_ISSUER='https://mock-auth.invalid' -e JWT_AUDIENCE='mock-audience' \
   nr-csp-backend:latest
 
 # 4. E2E frontend on :3001.
@@ -216,10 +212,8 @@ cd frontend/e2e && npm test
 1. **Free `:3000` before `docker compose up`.** If something else holds it, Rancher's port-forwarder
    fails to establish and does not retry — `docker ps` shows the mapping, the app answers *inside*
    the container, but the host has no listener. Fix: `docker restart csp-frontend`.
-2. **The `JWT_*` placeholders on the e2e backend are mandatory**, even with mock auth on.
-   `JwtService.init()` is an unconditional `@PostConstruct` doing `new URL(jwksUri)`; an empty value
-   throws `MalformedURLException: no protocol` and the context never starts. They are only parsed,
-   never fetched.
+2. **Mock backend authentication requires no SSO configuration.** Set `AUTH_MOCK_ENABLED=true`;
+   the real JWT provider is not initialized in mock mode. Real authentication needs the two CSS settings.
 3. **Do not use `--network host` under Rancher Desktop** — it binds inside the Rancher VM, not your
    WSL distro, so `localhost:8080` from your shell never reaches it. Publish the port instead.
 4. **Give Oracle ~40s.** `docker ps` reports `Up` well before it accepts connections, and the
@@ -232,7 +226,7 @@ curl -s 'http://localhost:3001/api/inbox?page=0&size=1' | grep -o '"totalElement
 curl -s -o /dev/null -w '%{http_code}\n' http://localhost:3000/                              # 200 = dev stack up
 ```
 
-A 401 from `:3000/api/...` without signing in is **correct** — that stack uses real Cognito.
+A 401 from `:3000/api/...` without signing in is **correct** — that stack uses real CSS.
 
 ### Resetting the database to the snapshot
 
@@ -422,7 +416,7 @@ and env flags as **defaults to adjust for your app** — override them via `.env
    context fails to initialize if the Oracle listener isn't up yet, and then every `/api` route 404s.)
 3. **Frontend** on `:3000` (`npm start`) — or any port; set `BASE_URL` to match. **No auth setup
    is needed:** the suite injects mock auth into its own browser (see the CSP quick start), so
-   `frontend/public/amplify-config.js` should be left exactly as your own dev stack needs it.
+   `frontend/public/config.js` should be left exactly as your own dev stack needs it.
 
 ## Seeded database image — how it's built and refreshed
 

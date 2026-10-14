@@ -57,9 +57,9 @@ springdoc:
 # ===================================================================
 security:
   jwt:
-    jwks-uri: ${JWT_JWKS_URI}
-    issuer: ${JWT_ISSUER}
-    audience: ${JWT_AUDIENCE}
+    jwks-uri: ${CSP_OIDC_JWKS_URI:}
+    issuer: ${CSP_OIDC_ISSUER_URI:}
+    client-id: ${CSP_OIDC_CLIENT_ID:}
 
 # ===================================================================
 # Logging — per-package levels (override via env or logging.level.*)
@@ -74,7 +74,7 @@ logging:
 
 ---
 # Local development profile
-# Empty fallbacks let the app boot without Cognito configured;
+# Empty fallbacks let the app boot without SSO configured;
 # set the env vars in .env when those integrations are needed.
 spring:
   config:
@@ -88,9 +88,9 @@ spring:
 
 security:
   jwt:
-    jwks-uri: ${JWT_JWKS_URI:}
-    issuer: ${JWT_ISSUER:}
-    audience: ${JWT_AUDIENCE:}
+    jwks-uri: ${CSP_OIDC_JWKS_URI:}
+    issuer: ${CSP_OIDC_ISSUER_URI:}
+    client-id: ${CSP_OIDC_CLIENT_ID:}
 
 auth:
   mock:

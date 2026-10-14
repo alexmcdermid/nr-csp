@@ -3,6 +3,7 @@ package ca.bc.gov.nrs.csp.backend.config;
 import ca.bc.gov.nrs.csp.backend.filter.JwtRequestFilter;
 import ca.bc.gov.nrs.csp.backend.filter.MockRequestFilter;
 import ca.bc.gov.nrs.csp.backend.service.JwtService;
+import ca.bc.gov.nrs.csp.backend.util.constants.Roles;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -55,7 +56,7 @@ public class SecurityConfig {
                                 "/api/swagger-ui/**", "/api/swagger-ui.html",
                                 "/api/v3/api-docs/**"
                         ).permitAll()
-                        .requestMatchers(API_PATH).authenticated()
+                        .requestMatchers(API_PATH).hasAnyAuthority(Roles.ADMIN, Roles.APPROVE, Roles.VIEW)
                         .anyRequest().authenticated()
                 );
 

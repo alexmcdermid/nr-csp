@@ -59,11 +59,11 @@ public class JwtRequestFilter extends OncePerRequestFilter {
             response.sendError(HttpServletResponse.SC_UNAUTHORIZED, "Invalid token signature.");
             return;
         } catch (ExpiredJwtException e) {
-            log.warn("JWT expired: {}", e.getMessage());
+            log.warn("JWT expired.");
             response.sendError(HttpServletResponse.SC_UNAUTHORIZED, "Token has expired.");
             return;
         } catch (JwtException e) {
-            log.warn("JWT invalid: {}", e.getMessage());
+            log.warn("JWT invalid.");
             response.sendError(HttpServletResponse.SC_UNAUTHORIZED, "Invalid token.");
             return;
         }

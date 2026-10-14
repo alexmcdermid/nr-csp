@@ -3,93 +3,97 @@ package ca.bc.gov.nrs.csp.backend.service;
 import ca.bc.gov.nrs.csp.backend.config.JwtProperties;
 import ca.bc.gov.nrs.csp.backend.exception.JwtSigningKeyException;
 import ca.bc.gov.nrs.csp.backend.util.constants.Roles;
-import com.auth0.jwk.Jwk;
 import com.auth0.jwk.JwkProvider;
 import com.auth0.jwk.JwkProviderBuilder;
 import io.jsonwebtoken.Claims;
+import io.jsonwebtoken.JwtException;
 import io.jsonwebtoken.Jwts;
 import jakarta.annotation.PostConstruct;
+import java.net.MalformedURLException;
+import java.net.URI;
+import java.security.Key;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.stereotype.Service;
 
-import java.net.MalformedURLException;
-import java.net.URL;
-import java.security.Key;
-import java.util.ArrayList;
-import java.util.List;
-
+/** Validates CSS access tokens and preserves CSP's existing staff permission contract. */
 @Service
 public class JwtService {
-
+    private static final Set<String> STAFF_PROVIDERS = Set.of("idir", "azureidir");
     private final JwtProperties jwtProperties;
     private JwkProvider provider;
+    @Value("${auth.mock.enabled:false}")
+    private boolean mockEnabled;
 
-    public JwtService(JwtProperties jwtProperties) {
-        this.jwtProperties = jwtProperties;
-    }
+    public JwtService(JwtProperties jwtProperties) { this.jwtProperties = jwtProperties; }
 
     @PostConstruct
     public void init() throws MalformedURLException {
-        this.provider = new JwkProviderBuilder(new URL(jwtProperties.jwksUri())).build();
-    }
-
-    public String extractUsername(String token) {
-        Claims claims = extractAllClaims(token);
-        String idpUsername = claims.get("custom:idp_username", String.class);
-        return (idpUsername != null && !idpUsername.isBlank()) ? idpUsername : claims.getSubject();
+        if (mockEnabled) return;
+        if (jwtProperties.issuer() == null || jwtProperties.issuer().isBlank()
+                || jwtProperties.clientId() == null || jwtProperties.clientId().isBlank()) {
+            throw new IllegalStateException("CSP_OIDC_ISSUER_URI and CSP_OIDC_CLIENT_ID are required");
+        }
+        String jwks = jwtProperties.jwksUri();
+        if (jwks == null || jwks.isBlank()) {
+            jwks = jwtProperties.issuer().replaceAll("/+$", "") + "/protocol/openid-connect/certs";
+        }
+        this.provider = new JwkProviderBuilder(URI.create(jwks).toURL()).build();
     }
 
     public Claims extractAllClaims(String token) {
-        var parser = Jwts.parser()
+        if (provider == null) throw new JwtException("SSO authentication is not configured");
+        var parsed = Jwts.parser()
                 .keyLocator(header -> {
-                    try {
-                        String kid = (String) header.get("kid");
-                        Jwk jwk = provider.get(kid);
-                        return (Key) jwk.getPublicKey();
-                    } catch (Exception e) {
-                        throw new JwtSigningKeyException("Failed to resolve signing key", e);
-                    }
-                });
-
-        String issuer = jwtProperties.issuer();
-        if (issuer != null && !issuer.isBlank()) {
-            parser.requireIssuer(issuer);
+                    try { return (Key) provider.get((String) header.get("kid")).getPublicKey(); }
+                    catch (Exception e) { throw new JwtSigningKeyException("Failed to resolve signing key", e); }
+                })
+                .requireIssuer(jwtProperties.issuer())
+                .require("azp", jwtProperties.clientId())
+                .require("typ", "Bearer")
+                .build().parseSignedClaims(token);
+        Claims claims = parsed.getPayload();
+        String idp = claims.get("identity_provider", String.class);
+        if (!"RS256".equals(parsed.getHeader().getAlgorithm()) || claims.getExpiration() == null
+                || !(STAFF_PROVIDERS.contains(idp == null ? "" : idp) || "bceidbusiness".equals(idp))
+                || auditUsername(claims).isBlank()) {
+            throw new JwtException("A CSP user access token with an audit identity is required");
         }
-
-        String audience = jwtProperties.audience();
-        if (audience != null && !audience.isBlank()) {
-            parser.requireAudience(audience);
-        }
-
-        return parser.build()
-                .parseSignedClaims(token)
-                .getPayload();
+        return claims;
     }
 
-    @SuppressWarnings("unchecked")
+    public String extractUsername(String token) { return auditUsername(extractAllClaims(token)); }
+
+    private String auditUsername(Claims claims) {
+        String key = "bceidbusiness".equals(claims.get("identity_provider")) ? "bceid_username" : "idir_username";
+        Object value = claims.get(key);
+        return value instanceof String username ? username.trim() : "";
+    }
+
     public List<GrantedAuthority> extractAuthorities(String token) {
         Claims claims = extractAllClaims(token);
-        List<GrantedAuthority> authorities = new ArrayList<>();
-
-        List<String> groups = claims.get("cognito:groups", List.class);
-        if (groups != null) {
-            if (matchesRole(groups, Roles.VIEW))    authorities.add(new SimpleGrantedAuthority(Roles.VIEW));
-            if (matchesRole(groups, Roles.APPROVE)) authorities.add(new SimpleGrantedAuthority(Roles.APPROVE));
-            if (matchesRole(groups, Roles.ADMIN))   authorities.add(new SimpleGrantedAuthority(Roles.ADMIN));
+        // Business BCeID cannot inherit CSP staff capabilities. Industry client scope
+        // requires its own agreed role/capability contract before granting app access.
+        if (!STAFF_PROVIDERS.contains(claims.get("identity_provider", String.class))) return List.of();
+        List<String> roles = stringRoles(claims.get("client_roles"));
+        if (roles.isEmpty() && claims.get("resource_access") instanceof Map<?, ?> byClient
+                && byClient.get(jwtProperties.clientId()) instanceof Map<?, ?> client) {
+            roles = stringRoles(client.get("roles"));
         }
-        return authorities;
+        List<String> clientRoles = roles;
+        return List.of(Roles.ADMIN, Roles.APPROVE, Roles.VIEW).stream()
+                .filter(role -> clientRoles.contains("CSP_" + role))
+                .map(role -> (GrantedAuthority) new SimpleGrantedAuthority(role)).toList();
     }
 
-    /**
-     * Matches a Cognito group name against a role constant.
-     * Supports plain names ("ADMIN") and FAM-prefixed names ("CSP_ADMIN", "NRS_CSP_ADMIN").
-     */
-    private boolean matchesRole(List<String> groups, String role) {
-        String roleSuffix = "_" + role.toUpperCase();
-        return groups.stream().anyMatch(g -> {
-            String upper = g.toUpperCase();
-            return upper.equals(role.toUpperCase()) || upper.endsWith(roleSuffix);
-        });
+    private static List<String> stringRoles(Object claim) {
+        return claim instanceof List<?> values ? values.stream().filter(String.class::isInstance)
+                .map(value -> ((String) value).trim().toUpperCase(Locale.ROOT))
+                .filter(role -> !role.isBlank()).toList() : List.of();
     }
 }

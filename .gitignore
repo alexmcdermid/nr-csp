@@ -50,6 +50,7 @@ playbooks/collections/
 !README.md
 !ARCHITECTURE.md
 !SECURITY.md
+!docs/fam-keycloak-migration.md
 **.log
 **.iml
 

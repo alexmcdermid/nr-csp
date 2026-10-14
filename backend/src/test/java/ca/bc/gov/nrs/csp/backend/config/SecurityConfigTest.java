@@ -31,7 +31,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @TestPropertySource(properties = {
         "security.jwt.jwks-uri=https://test.example.com/.well-known/jwks.json",
         "security.jwt.issuer=test-issuer",
-        "security.jwt.audience=test-audience"
+        "security.jwt.client-id=test-audience"
 })
 class SecurityConfigTest {
 
@@ -78,10 +78,16 @@ class SecurityConfigTest {
     }
 
     @Test
-    @WithMockUser
+    @WithMockUser(authorities = "VIEW")
     void authenticatedRequestToApiEndpoint_isOk() throws Exception {
         mockMvc.perform(get("/api/some-endpoint"))
                 .andExpect(status().isOk());
+    }
+
+    @Test
+    @WithMockUser(authorities = "OTHER_APP_ADMIN")
+    void authenticatedWithoutCspRole_isForbidden() throws Exception {
+        mockMvc.perform(get("/api/some-endpoint")).andExpect(status().isForbidden());
     }
 
     @Test

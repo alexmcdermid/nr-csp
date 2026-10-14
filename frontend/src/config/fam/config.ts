@@ -1,4 +1,4 @@
 export const famConfig = {
-  clientId: globalThis.amplifyConfig?.famClientId ?? '',
-  environment: globalThis.amplifyConfig?.appEnv ?? 'dev',
+  clientId: globalThis.appConfig?.famClientId ?? '',
+  environment: globalThis.appConfig?.appEnv ?? 'dev',
 } as const;

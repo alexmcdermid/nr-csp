@@ -1,3 +1,4 @@
+import { Button } from '@carbon/react';
 import { type ReactNode, useEffect, useRef } from 'react';
 
 import { LoadingScreen } from '@/components/core/LoadingScreen';
@@ -9,7 +10,7 @@ interface Props {
 }
 
 export function ProtectedRoute({ children }: Props) {
-  const { isAuthenticated, isLoading, isSigningOut, signIn } = useAuth();
+  const { user, isAuthenticated, isLoading, isSigningOut, signIn, signOut } = useAuth();
   const isCallbackPending = useOauthCallbackPending();
   const loginAttempted = useRef(false);
 
@@ -29,5 +30,13 @@ export function ProtectedRoute({ children }: Props) {
 
   if (isLoading || isSigningOut || !isAuthenticated) return <LoadingScreen />;
 
+  if (!user?.privileges.length)
+    return (
+      <main id="main-content">
+        <h1>No CSP access</h1>
+        <p>Your account has no CSP role. Contact your application administrator.</p>
+        <Button onClick={() => void signOut()}>Sign out</Button>
+      </main>
+    );
   return <>{children}</>;
 }
